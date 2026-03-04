@@ -28,26 +28,26 @@ RESET="\033[0m"
 check_root() {
     # 检查是否为root用户执行
     if [ $(id -u) != "0" ]; then
-        echo -e "${RED}错误：${PLAIN} 请以 root 用户执行脚本！${PLAIN}"
+        echo -e "${RED}错误：${RESET} 请以 root 用户执行脚本！${RESET}"
         exit 1
     fi
 
     # 检查操作系统是否为Debian/Ubuntu
     if ! grep -qiE "debian|ubuntu" /etc/os-release; then
-        echo -e "${RED}错误：${RESET} 本脚本仅支持 Debian/Ubuntu 系统！"
+        echo -e "${RED}错误：${RESET} 本脚本仅支持 Debian/Ubuntu 系统！${RESET}"
         exit 1
     fi    
 
     # 更新系统并安装必要工具
     echo -e "${CYAN}正在初始化环境，这可能需要一点时间...${RESET}"
     
-    # 更新系统
-    apt-get update
-    apt-get upgrade -y
-    
-    # 安装必要工具
-    apt-get install -y curl wget
-}
+        # 更新系统
+        apt-get update > /dev/null 2>&1
+        apt-get upgrade -y > /dev/null 2>&1
+
+        # 安装必要工具
+        apt-get install -y curl wget > /dev/null 2>&1
+    }
 
 # ============================================================
 #  安装主逻辑（把你现有脚本主体封装成函数）
