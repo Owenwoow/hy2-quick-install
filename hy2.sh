@@ -42,11 +42,11 @@ check_root() {
     echo -e "${CYAN}正在初始化环境，这可能需要一点时间...${RESET}"
     
         # 更新系统
-        apt-get update > /dev/null 2>&1
-        apt-get upgrade -y > /dev/null 2>&1
+        apt-get update > /dev/null
+        apt-get upgrade -y > /dev/null
 
         # 安装必要工具
-        apt-get install -y curl wget > /dev/null 2>&1
+        apt-get install -y curl wget > /dev/null
     }
 
 # ============================================================
