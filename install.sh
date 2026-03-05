@@ -1,6 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
+# ============================================================
+# Hysteria 2 一键部署脚本
+# 项目地址: https://github.com/Owenwoow/hy2-quick-install
+# ============================================================
+
 
 # ---------- 颜色输出 ----------
 GREEN="\033[32m"
@@ -447,20 +452,26 @@ menu() {
     esac
 
     # 菜单触发（交互使用）
-    log "欢迎使用由 Owen_W 开发的 Hysteria 2 一键部署脚本"
-    log "================= 请选择操作 ================="
-    echo "1) 安装 Hysteria 2"
-    echo "2) 卸载/环境清理"
-    echo "3) 清理端口跳跃规则 (iptables)"
-    safe_read CHOICE "请输入选项 [1-3] (直接回车 = 默认 1): "
-    CHOICE="${CHOICE:-1}"
+    while true; do
+        echo ""
+        log "欢迎使用由 Owen_W 开发的 Hysteria 2 一键部署脚本"
+        log "项目地址: https://github.com/Owenwoow/hy2-quick-install"
+        log "================= 请选择操作 ================="
+        echo "1) 安装 Hysteria 2"
+        echo "2) 卸载/环境清理"
+        echo "3) 清理端口跳跃规则 (iptables)"
+        echo "0) 退出脚本"
+        safe_read CHOICE "请输入选项 [0-3] (直接回车 = 默认 1): "
+        CHOICE="${CHOICE:-1}"
 
-    case "${CHOICE}" in
-    1) Install_Hy2 ;;
-    2) Uninstall_Hy2 ;;
-    3) Clean_Iptables ;;
-    *) warn "无效选项：${CHOICE}，默认执行安装"; Install_Hy2 ;;
-    esac
+        case "${CHOICE}" in
+        1) Install_Hy2 ;;
+        2) Uninstall_Hy2 ;;
+        3) Clean_Iptables ;;
+        0) ok "退出脚本"; exit 0 ;;
+        *) warn "无效选项：${CHOICE}，默认退出"; exit 1 ;;
+        esac
+    done
 }
 
 
