@@ -361,50 +361,76 @@ Uninstall_Hy2() {
     ok "环境残留文件清理完成"
 
     # 3) 检查并清理 iptables 规则 (端口跳跃)
-    log "检查 iptables NAT PREROUTING 规则..."
-    if ! command -v iptables >/dev/null 2>&1; then
-        warn "未找到 iptables，跳过防火墙规则检查"
-    else
-        local RULES
-        RULES="$(iptables -t nat -L PREROUTING --line-numbers -n 2>/dev/null || true)"
-
-        if echo "${RULES}" | awk 'BEGIN{has=0} $1 ~ /^[0-9]+$/ {has=1} END{exit (has?0:1)}'; then
-            echo -e "${YELLOW}当前 NAT PREROUTING 规则如下（带行号）：${RESET}"
-            echo "${RULES}"
-            echo
-
-            local DELNO=""
-            safe_read DELNO "请输入要删除的规则行号 (直接回车 = 不删除任何规则): "
-
-            if [[ -z "${DELNO}" ]]; then
-                warn "未输入行号，默认不删除任何规则"
-            elif [[ ! "${DELNO}" =~ ^[0-9]+$ ]]; then
-                warn "输入不是纯数字：${DELNO}，跳过删除"
-            else
-                if echo "${RULES}" | awk -v n="${DELNO}" '$1==n {found=1} END{exit(found?0:1)}'; then
-                    log "正在删除规则：iptables -t nat -D PREROUTING ${DELNO}"
-                    if iptables -t nat -D PREROUTING "${DELNO}" >/dev/null 2>&1; then
-                        ok "规则已成功删除"
-                        if command -v netfilter-persistent >/dev/null 2>&1; then
-                            netfilter-persistent save >/dev/null 2>&1 || true
-                            ok "已持久化保存（netfilter-persistent）"
-                        else
-                            warn "未找到 netfilter-persistent，需手动保存规则"
-                        fi
-                    else
-                        warn "删除失败：行号可能已变化或规则不存在"
-                    fi
-                else
-                    warn "未找到行号 ${DELNO} 对应的规则，跳过删除"
-                fi
-            fi
-        else
-            ok "未检测到 NAT PREROUTING 规则，跳过"
-        fi
-    fi
+    Clean_Iptables
 
     echo
     ok "========== 环境清理与卸载流程结束 =========="
+}
+
+
+# ============================================================
+#  清理端口跳跃规则 (iptables)
+# ============================================================
+Clean_Iptables() {
+    log "检查 iptables NAT PREROUTING 规则..."
+    if ! command -v iptables >/dev/null 2>&1; then
+        warn "未找到 iptables，跳过防火墙规则检查"
+        return
+    fi
+
+    local RULES
+    RULES="$(iptables -t nat -L PREROUTING --line-numbers -n 2>/dev/null || true)"
+
+    if ! echo "${RULES}" | awk 'BEGIN{has=0} $1 ~ /^[0-9]+$/ {has=1} END{exit (has?0:1)}'; then
+        ok "未检测到 NAT PREROUTING 规则，跳过"
+        return
+    fi
+
+    echo -e "${YELLOW}当前 NAT PREROUTING 规则如下（带行号）：${RESET}"
+    echo "${RULES}"
+    echo
+
+    local DEL_INPUT=""
+    safe_read DEL_INPUT "请输入要删除的规则行号 (支持多个用空格隔开; 输入 all 删除全部; 直接回车 = 不删除): "
+
+    if [[ -z "${DEL_INPUT}" ]]; then
+        warn "未输入行号，默认不删除任何规则"
+        return
+    fi
+
+    local TO_DELETE=()
+    if [[ "${DEL_INPUT}" == "all" || "${DEL_INPUT}" == "ALL" ]]; then
+        # 获取所有规则行号，逆序排序（必须逆序以防行号变换错位）
+        TO_DELETE=($(echo "${RULES}" | awk '$1 ~ /^[0-9]+$/ {print $1}' | sort -nr))
+    else
+        # 将用户输入的数字提取出来，并且逆序排序
+        TO_DELETE=($(echo "${DEL_INPUT}" | tr ',' ' ' | awk '{for(i=1;i<=NF;i++) print $i}' | grep -E '^[0-9]+$' | sort -nr || true))
+    fi
+
+    if [[ ${#TO_DELETE[@]} -eq 0 ]]; then
+        warn "输入无效或没有有效的规则行号，跳过删除"
+        return
+    fi
+
+    local DELETED_COUNT=0
+    for n in "${TO_DELETE[@]}"; do
+        log "正在删除规则：iptables -t nat -D PREROUTING ${n}"
+        if iptables -t nat -D PREROUTING "${n}" >/dev/null 2>&1; then
+            ((DELETED_COUNT++))
+        else
+            warn "删除失败：行号 ${n} 可能已变化或规则不存在"
+        fi
+    done
+
+    if [[ ${DELETED_COUNT} -gt 0 ]]; then
+        ok "成功删除了 ${DELETED_COUNT} 条规则"
+        if command -v netfilter-persistent >/dev/null 2>&1; then
+            netfilter-persistent save >/dev/null 2>&1 || true
+            ok "已持久化保存（netfilter-persistent）"
+        else
+            warn "未找到 netfilter-persistent，需手动保存规则"
+        fi
+    fi
 }
 
 
@@ -425,12 +451,14 @@ menu() {
     log "================= 请选择操作 ================="
     echo "1) 安装 Hysteria 2"
     echo "2) 卸载/环境清理"
-    safe_read CHOICE "请输入选项 [1-2] (直接回车 = 默认 1): "
+    echo "3) 清理端口跳跃规则 (iptables)"
+    safe_read CHOICE "请输入选项 [1-3] (直接回车 = 默认 1): "
     CHOICE="${CHOICE:-1}"
 
     case "${CHOICE}" in
     1) Install_Hy2 ;;
     2) Uninstall_Hy2 ;;
+    3) Clean_Iptables ;;
     *) warn "无效选项：${CHOICE}，默认执行安装"; Install_Hy2 ;;
     esac
 }
