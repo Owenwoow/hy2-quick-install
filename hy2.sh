@@ -94,7 +94,7 @@ Install_Hy2() {
     # 检查服务是否存在
     if [[ -f "/etc/systemd/system/hysteria-server.service" ]]; then
         warn "检测到 Hysteria 2 服务已存在！"
-        safe_read CONFIRM "是否覆盖安装？(y/n, 默认n): "
+        safe_read CONFIRM "是否覆盖安装？(y/n, 默认: n): "
         CONFIRM=${CONFIRM:-n}
         if [[ "${CONFIRM}" != "y" ]]; then
             log "已取消安装。"
@@ -109,7 +109,7 @@ Install_Hy2() {
     log "========== Hysteria 2 一键部署脚本 =========="
 
     # 1) 密码：用户自定义 或 自动生成 20 位
-    safe_read user_pass "请输入密码（直接回车=自动生成20位强随机密码）: "
+    safe_read user_pass "请输入密码 (直接回车 = 自动生成 20 位强随机密码): "
     if [[ -z "${user_pass}" ]]; then
         PASS="$(gen_pass_20)"
         ok "已生成随机密码：${PASS}"
@@ -120,7 +120,7 @@ Install_Hy2() {
 
     # 2) 端口：选择 hysteria2 的监听端口并且验证合法性/是否被占用
     while true; do
-        safe_read input_port "请输入 Hysteria 2 监听端口 (默认=443): "
+        safe_read input_port "请输入 Hysteria 2 监听端口 (直接回车 = 默认 443): "
         PORT=${input_port:-443}
         
         # 正则：必须全是数字
@@ -143,22 +143,22 @@ Install_Hy2() {
     log "正在获取公网 IPv4..."
     auto_ip="$(get_public_ipv4 2>/dev/null || true)"
     if [[ -n "${auto_ip}" ]]; then
-        safe_read input_ip "检测到公网 IP：${auto_ip}，直接回车确认或输入覆盖: "
+        safe_read input_ip "检测到公网 IP: ${auto_ip}，确认请直接回车 或 输入其他 IP 覆盖: "
         HOST="${input_ip:-${auto_ip}}"
     else
-        safe_read input_ip "自动获取 IP 失败，请手动输入服务器公网 IP: "
+        safe_read input_ip "自动获取公网 IP 失败，请手动输入服务器公网 IP: "
         [[ -z "${input_ip}" ]] && die "公网 IP 不能为空"
         HOST="${input_ip}"
     fi
     ok "服务器 IP：${HOST}"
 
     # 4) 伪装网站
-    safe_read input_fake "请输入伪装网站 URL（默认=https://www.bing.com）: "
+    safe_read input_fake "请输入伪装网站的 URL (直接回车 = 默认 https://www.bing.com): "
     FAKE_URL="${input_fake:-https://www.bing.com}"
     ok "伪装网站：${FAKE_URL}"
 
     # 5) 节点名称：用户输入 或 随机生成
-    safe_read input_name "请输入节点名称（直接回车=自动生成）: "
+    safe_read input_name "请输入节点名称 (直接回车 = 自动生成随机名称): "
     if [[ -z "${input_name}" ]]; then
         NODE_NAME="hy2-$(printf "%04d" $((RANDOM % 10000)))"
         ok "已生成随机节点名：${NODE_NAME}"
@@ -168,11 +168,11 @@ Install_Hy2() {
     fi
 
     # 6) 端口跳跃及格式验证
-    safe_read input_jump "是否启用 UDP 端口跳跃？（回车=启用 / 输入 n=不需要）: "
+    safe_read input_jump "是否启用 UDP 端口跳跃？(直接回车 = 启用 / 输入 n = 不启用): "
     input_jump="${input_jump:-y}"
     if [[ "${input_jump}" == "y" || "${input_jump}" == "Y" ]]; then
         while true; do
-            safe_read input_mport "请输入 UDP 端口跳跃范围（默认=20000-20100）: "
+            safe_read input_mport "请输入 UDP 端口跳跃范围 (直接回车 = 默认 20000-20100): "
             mport="${input_mport:-20000-20100}"
             
             # 正则：必须是 数字-数字 的格式
@@ -193,7 +193,7 @@ Install_Hy2() {
 
     # ---------- 安装 Hysteria 2 ----------
     log "安装 Hysteria 2（官方脚本）..."
-    bash <(curl -fsSL https://get.hy2.sh/) || die "Hysteria 2 官方安装脚本失败，请检查网络！"
+    bash <(curl -fsSL https://get.hy2.sh/) >/dev/null 2>&1 || die "Hysteria 2 官方安装脚本失败，请检查网络！"
     ok "Hysteria 2 安装完成"
 
 
@@ -344,7 +344,7 @@ Uninstall_Hy2() {
         fi
 
         log "调用官方卸载脚本（--remove）..."
-        bash <(curl -fsSL https://get.hy2.sh/) --remove || true
+        bash <(curl -fsSL https://get.hy2.sh/) --remove >/dev/null 2>&1 || true
         ok "基础服务文件已移除"
     else
         warn "未检测到 Hysteria 服务安装，跳过服务主体卸载步骤"
@@ -374,7 +374,7 @@ Uninstall_Hy2() {
             echo
 
             local DELNO=""
-            safe_read DELNO "请输入要删除的规则行号（留空回车则默认不删除）："
+            safe_read DELNO "请输入要删除的规则行号 (直接回车 = 不删除任何规则): "
 
             if [[ -z "${DELNO}" ]]; then
                 warn "未输入行号，默认不删除任何规则"
@@ -425,7 +425,7 @@ menu() {
     log "================= 请选择操作 ================="
     echo "1) 安装 Hysteria 2"
     echo "2) 卸载/环境清理"
-    safe_read CHOICE "请输入选项 [1-2]（默认1）："
+    safe_read CHOICE "请输入选项 [1-2] (直接回车 = 默认 1): "
     CHOICE="${CHOICE:-1}"
 
     case "${CHOICE}" in
