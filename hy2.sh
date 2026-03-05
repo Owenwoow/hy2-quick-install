@@ -27,9 +27,20 @@ get_default_iface() {
 
 # 获取公网 IPv4
 get_public_ipv4() {
-    curl -s --max-time 5 https://api.ip.sb/ip \
-    || curl -s --max-time 5 https://api4.ipify.org \
-    || curl -s --max-time 5 https://ifconfig.me
+    local ip=""
+    # 强制通过 IPv4 协议向多个 API 请求
+    ip="$(curl -4 -s --max-time 5 https://api.ip.sb/ip 2>/dev/null || true)"
+    
+    # 正则校验：如果不是标准的 IPv4 格式，则尝试下一个备用源
+    if [[ ! "${ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        ip="$(curl -4 -s --max-time 5 https://api4.ipify.org 2>/dev/null || true)"
+    fi
+    
+    if [[ ! "${ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        ip="$(curl -4 -s --max-time 5 https://ifconfig.me 2>/dev/null || true)"
+    fi
+    
+    echo "${ip}"
 }
 
 # URL 片段编码（节点名中的特殊字符）
@@ -323,13 +334,13 @@ Uninstall_Hy2() {
 
     # 1) 检查并停止服务
     log "检查 systemd 服务：${SERVICE} ..."
-    if systemctl list-unit-files 2>/dev/null | awk '{print $1}' | grep -qx "${SERVICE}"; then
-        if systemctl is-active --quiet "${SERVICE}"; then
+    if [[ -f "/etc/systemd/system/${SERVICE}" ]] || command -v hysteria >/dev/null 2>&1 || systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE}"; then
+        if systemctl is-active --quiet "${SERVICE}" 2>/dev/null; then
             log "检测到服务正在运行，尝试停止..."
             systemctl stop "${SERVICE}" >/dev/null 2>&1 || true
             ok "服务已停止"
         else
-            ok "检测到服务存在，但未运行"
+            ok "检测到遗留的服务文件或程序，准备清理"
         fi
 
         log "调用官方卸载脚本（--remove）..."
