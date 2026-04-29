@@ -719,7 +719,7 @@ menu() {
         echo ""
         echo -e "${CYAN}────────────────────────────────────────${RESET}"
         # shellcheck disable=SC2162
-        read -r -p "  按 Enter 键返回主菜单..." -n 1
+        read -r -p "  按 Enter 键返回主菜单..."
     done
 }
 
