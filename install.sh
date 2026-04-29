@@ -714,6 +714,12 @@ menu() {
         0) ok "退出脚本"; exit 0 ;;
         *) warn "无效选项：${CHOICE}，请重新输入"; continue ;;
         esac
+
+        # 操作完成后暂停，让用户看清输出内容再清屏返回菜单
+        echo ""
+        echo -e "${CYAN}────────────────────────────────────────${RESET}"
+        # shellcheck disable=SC2162
+        read -r -p "  按 Enter 键返回主菜单..." -n 1
     done
 }
 
