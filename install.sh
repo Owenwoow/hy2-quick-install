@@ -14,6 +14,12 @@ RED="\033[31m"
 CYAN="\033[36m"
 RESET="\033[0m"
 
+# ---------- 超时设置（秒） ----------
+TIMEOUT_APT_UPDATE=120
+TIMEOUT_APT_INSTALL=300
+TIMEOUT_HY2_INSTALL=180
+TIMEOUT_CURL_DOWNLOAD=60
+
 log() { echo -e "${CYAN}[INFO]${RESET} $*"; }
 ok()  { echo -e "${GREEN}[OK]${RESET} $*"; }
 warn(){ echo -e "${YELLOW}[WARN]${RESET} $*"; }
@@ -21,6 +27,48 @@ die() { echo -e "${RED}[ERR]${RESET} $*" >&2; exit 1; }
 
 
 # ---------- 工具函数 ----------
+
+# 带旋转动画 + 超时保护执行后台命令
+# 用法：run_with_spinner <超时秒数> "提示文字" command arg1 arg2 ...
+run_with_spinner() {
+    local timeout_sec="$1"; shift
+    local msg="$1"; shift
+    local logfile="/tmp/hy2_install_$$.log"
+    local spin_chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    local i=0
+
+    # 后台执行命令（带 timeout 包裹）
+    timeout "${timeout_sec}" "$@" > "${logfile}" 2>&1 &
+    local pid=$!
+
+    printf "  ${CYAN}%s${RESET} %s" "${spin_chars:0:1}" "${msg}"
+    while kill -0 "${pid}" 2>/dev/null; do
+        local char="${spin_chars:$((i % ${#spin_chars})):1}"
+        printf "\r  ${CYAN}%s${RESET} %s" "${char}" "${msg}"
+        ((i++))
+        sleep 0.1
+    done
+
+    wait "${pid}"
+    local exit_code=$?
+
+    if [[ ${exit_code} -eq 0 ]]; then
+        printf "\r  ${GREEN}✔${RESET} %s\n" "${msg}"
+    elif [[ ${exit_code} -eq 124 ]]; then
+        printf "\r  ${RED}⏱${RESET} %s ${RED}（超时 ${timeout_sec}s，已中断）${RESET}\n" "${msg}"
+        echo -e "${RED}可能原因：网络不佳或主机性能不足${RESET}"
+        tail -10 "${logfile}" 2>/dev/null || true
+        rm -f "${logfile}"
+        return ${exit_code}
+    else
+        printf "\r  ${RED}✘${RESET} %s\n" "${msg}"
+        echo -e "${RED}错误日志（最后20行）：${RESET}"
+        tail -20 "${logfile}" 2>/dev/null || true
+        rm -f "${logfile}"
+        return ${exit_code}
+    fi
+    rm -f "${logfile}"
+}
 gen_pass_20() {
     openssl rand -base64 64 | tr -dc 'A-Za-z0-9' | head -c 20
 }
@@ -71,11 +119,48 @@ safe_read() {
 
 # ---------- 依赖安装 ----------
 dep_install() {
-    log "正在更新软件源并静默安装依赖，这可能需要一点时间..."
-    apt-get update 2>&1 | grep -v "^$" || die "apt-get update 失败，请检查软件源或 dpkg 锁！"
-    apt-get upgrade -y 2>&1 | grep -v "^$" || die "apt-get upgrade 失败！"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget openssl iptables iptables-persistent 2>&1 | grep -v "^$" || die "依赖安装失败！"
-    ok "依赖安装完成"
+    log "正在检查并安装依赖..."
+
+    # 所有必需的包列表
+    local required_pkgs=(curl wget openssl iptables iptables-persistent)
+    local missing_pkgs=()
+
+    # 检测哪些包尚未安装
+    for pkg in "${required_pkgs[@]}"; do
+        if ! dpkg-query -W -f='${Status}' "${pkg}" 2>/dev/null | grep -q "install ok installed"; then
+            missing_pkgs+=("${pkg}")
+        fi
+    done
+
+    if [[ ${#missing_pkgs[@]} -eq 0 ]]; then
+        ok "所有依赖已安装，跳过"
+        return
+    fi
+
+    log "缺少以下依赖：${missing_pkgs[*]}"
+    echo ""
+
+    # 阶段 1：软件源索引缓存检测（1小时内更新过则跳过 update）
+    local apt_cache="/var/cache/apt/pkgcache.bin"
+    local cache_age=9999
+    if [[ -f "${apt_cache}" ]]; then
+        cache_age=$(( $(date +%s) - $(stat -c %Y "${apt_cache}") ))
+    fi
+    if [[ ${cache_age} -gt 3600 ]]; then
+        run_with_spinner ${TIMEOUT_APT_UPDATE} "更新软件源索引..." apt-get update \
+            || die "apt-get update 失败，请检查软件源或 dpkg 锁！"
+    else
+        echo -e "  ${GREEN}✔${RESET} 软件源索引有效（缓存命中，${cache_age}s 前更新），跳过 update"
+    fi
+
+    # 阶段 2：仅安装缺失的包，不安装推荐包
+    run_with_spinner ${TIMEOUT_APT_INSTALL} "安装依赖包：${missing_pkgs[*]}..." \
+        env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        --no-install-recommends "${missing_pkgs[@]}" \
+        || die "依赖安装失败！"
+
+    echo ""
+    ok "所有依赖安装完成"
 }
 
 
@@ -196,8 +281,13 @@ _do_install_core() {
 
 
     # ---------- 安装 Hysteria 2 ----------
-    log "安装 Hysteria 2（官方脚本）..."
-    bash <(curl -fsSL https://get.hy2.sh/) >/dev/null 2>&1 || die "Hysteria 2 官方安装脚本失败，请检查网络！"
+    log "下载 Hysteria 2 安装脚本..."
+    timeout ${TIMEOUT_CURL_DOWNLOAD} curl -fsSL https://get.hy2.sh/ -o /tmp/hy2_install.sh \
+        || die "下载 Hysteria 2 安装脚本超时（${TIMEOUT_CURL_DOWNLOAD}s），请检查网络！"
+    run_with_spinner ${TIMEOUT_HY2_INSTALL} "安装 Hysteria 2（官方脚本）..." \
+        bash /tmp/hy2_install.sh \
+        || die "Hysteria 2 安装失败！请检查网络连接。"
+    rm -f /tmp/hy2_install.sh
     ok "Hysteria 2 安装完成"
 
 
@@ -594,16 +684,24 @@ menu() {
 
     # 菜单触发（交互使用）
     while true; do
+        clear
+        local term_width border
+        term_width=$(tput cols 2>/dev/null || echo 60)
+        border=$(printf '═%.0s' $(seq 1 "${term_width}"))
+
+        echo -e "${CYAN}${border}${RESET}"
+        echo -e "${CYAN}  Hysteria 2 一键部署脚本  |  作者: Owen_W${RESET}"
+        echo -e "${CYAN}  项目: https://github.com/Owenwoow/hy2-quick-install${RESET}"
+        echo -e "${CYAN}${border}${RESET}"
         echo ""
-        log "欢迎使用由 Owen_W 开发的 Hysteria 2 一键部署脚本"
-        log "项目地址: https://github.com/Owenwoow/hy2-quick-install"
-        log "================= 请选择操作 ================="
-        echo "1) 安装 Hysteria 2"
-        echo "2) 卸载/环境清理"
-        echo "3) 清理端口跳跃规则 (iptables)"
-        echo "4) 读取订阅链接"
-        echo "5) 快速安装（请手动完成依赖部分的安装）"
-        echo "0) 退出脚本"
+        echo "  1) 安装 Hysteria 2"
+        echo "  2) 卸载/环境清理"
+        echo "  3) 清理端口跳跃规则 (iptables)"
+        echo "  4) 读取订阅链接"
+        echo "  5) 快速安装（请手动完成依赖部分的安装）"
+        echo "  0) 退出脚本"
+        echo ""
+        echo -e "${CYAN}${border}${RESET}"
         safe_read CHOICE "请输入选项 [0-5] (直接回车 = 默认 1): "
         CHOICE="${CHOICE:-1}"
 
