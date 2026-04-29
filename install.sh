@@ -72,9 +72,9 @@ safe_read() {
 # ---------- 依赖安装 ----------
 dep_install() {
     log "正在更新软件源并静默安装依赖，这可能需要一点时间..."
-    apt-get update > /dev/null
-    apt-get upgrade -y > /dev/null
-    DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget openssl iptables iptables-persistent > /dev/null
+    apt-get update 2>&1 | grep -v "^$" || die "apt-get update 失败，请检查软件源或 dpkg 锁！"
+    apt-get upgrade -y 2>&1 | grep -v "^$" || die "apt-get upgrade 失败！"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget openssl iptables iptables-persistent 2>&1 | grep -v "^$" || die "依赖安装失败！"
     ok "依赖安装完成"
 }
 
@@ -92,28 +92,19 @@ check_root() {
 }
 
 
-# ============================================================
-#  安装主逻辑
-# ============================================================
-Install_Hy2() {
-    # 检查服务是否存在
-    if [[ -f "/etc/systemd/system/hysteria-server.service" ]]; then
-        warn "检测到 Hysteria 2 服务已存在！"
-        safe_read CONFIRM "是否覆盖安装？(y/n, 默认: n): "
-        CONFIRM=${CONFIRM:-n}
-        if [[ "${CONFIRM}" != "y" ]]; then
-            log "已取消安装。"
-            return
-        fi
-    fi
 
-    # 安装环境和依赖
-    dep_install
+
+# ============================================================
+#  公共安装核心逻辑（交互输入 + 安装 + 配置 + 服务 + URI）
+# ============================================================
+_do_install_core() {
+    # 注意：调用方需已声明以下 local 变量：
+    #   PASS PORT HOST FAKE_URL NODE_NAME ENABLE_MPORT mport
+    #   ENC_NODE URI SERVICE_NAME SERVICE_PATH IFACE mport_start mport_end
 
     # ---------- 交互输入 ----------
-    log "========== Hysteria 2 一键部署脚本 =========="
-
-    # 1) 密码：用户自定义 或 自动生成 20 位
+    # 1) 密码
+    local user_pass
     safe_read user_pass "请输入密码 (直接回车 = 自动生成 20 位强随机密码): "
     if [[ -z "${user_pass}" ]]; then
         PASS="$(gen_pass_20)"
@@ -123,28 +114,25 @@ Install_Hy2() {
         ok "使用用户提供的密码"
     fi
 
-    # 2) 端口：选择 hysteria2 的监听端口并且验证合法性/是否被占用
+    # 2) 端口
+    local input_port
     while true; do
         safe_read input_port "请输入 Hysteria 2 监听端口 (直接回车 = 默认 443): "
         PORT=${input_port:-443}
-        
-        # 正则：必须全是数字
         if [[ ! "${PORT}" =~ ^[0-9]+$ ]] || [ "${PORT}" -lt 1 ] || [ "${PORT}" -gt 65535 ]; then
             warn "格式错误：端口必须是 1-65535 之间的纯数字！"
             continue
         fi
-
-        # UDP 端口占用检查（Hysteria 2 走 UDP）
         if ss -uln | grep -qwE ":${PORT}"; then
             warn "端口冲突：UDP ${PORT} 已被其他程序占用！请重新输入。"
             continue
         fi
-        
         ok "监听端口：${PORT}"
         break
     done
 
-    # 3) 公网 IP：自动获取，允许用户覆盖
+    # 3) 公网 IP
+    local auto_ip input_ip
     log "正在获取公网 IPv4..."
     auto_ip="$(get_public_ipv4 2>/dev/null || true)"
     if [[ -n "${auto_ip}" ]]; then
@@ -158,11 +146,13 @@ Install_Hy2() {
     ok "服务器 IP：${HOST}"
 
     # 4) 伪装网站
+    local input_fake
     safe_read input_fake "请输入伪装网站的 URL (直接回车 = 默认 https://www.bing.com): "
     FAKE_URL="${input_fake:-https://www.bing.com}"
     ok "伪装网站：${FAKE_URL}"
 
-    # 5) 节点名称：用户输入 或 随机生成
+    # 5) 节点名称
+    local input_name
     safe_read input_name "请输入节点名称 (直接回车 = 自动生成随机名称): "
     if [[ -z "${input_name}" ]]; then
         NODE_NAME="hy2-$(printf "%04d" $((RANDOM % 10000)))"
@@ -172,20 +162,29 @@ Install_Hy2() {
         ok "使用用户提供的节点名：${NODE_NAME}"
     fi
 
-    # 6) 端口跳跃及格式验证
+    # 6) 端口跳跃及格式/语义验证
+    local input_jump input_mport mport_start mport_end
     safe_read input_jump "是否启用 UDP 端口跳跃？(直接回车 = 启用 / 输入 n = 不启用): "
     input_jump="${input_jump:-y}"
     if [[ "${input_jump}" == "y" || "${input_jump}" == "Y" ]]; then
         while true; do
             safe_read input_mport "请输入 UDP 端口跳跃范围 (直接回车 = 默认 20000-20100): "
             mport="${input_mport:-20000-20100}"
-            
-            # 正则：必须是 数字-数字 的格式
             if [[ ! "${mport}" =~ ^[0-9]+-[0-9]+$ ]]; then
                 warn "格式错误：跳跃范围必须使用减号连接（例如 20000-20100）！"
                 continue
             fi
-            
+            mport_start="${mport%-*}"
+            mport_end="${mport#*-}"
+            if [ "${mport_start}" -ge "${mport_end}" ]; then
+                warn "起始端口必须小于结束端口！"; continue
+            fi
+            if [ "${mport_start}" -lt 1 ] || [ "${mport_end}" -gt 65535 ]; then
+                warn "端口号必须在 1-65535 之间！"; continue
+            fi
+            if [ "${PORT}" -ge "${mport_start}" ] && [ "${PORT}" -le "${mport_end}" ]; then
+                warn "跳跃范围不能包含主监听端口 ${PORT}！"; continue
+            fi
             ENABLE_MPORT="yes"
             ok "将启用端口跳跃：${mport} -> ${PORT}"
             break
@@ -255,11 +254,13 @@ EOF
 
 
     # ---------- 端口跳跃 iptables 规则 ----------
+    local IFACE
     IFACE="$(get_default_iface || true)"
     [[ -n "${IFACE}" ]] && ok "检测到主网卡：${IFACE}" || warn "未能自动获取主网卡（不影响规则配置）"
 
     if [[ "${ENABLE_MPORT}" == "yes" ]]; then
-        local ipt_range="$(echo "${mport}" | tr '-' ':')"
+        local ipt_range
+        ipt_range="$(echo "${mport}" | tr '-' ':')"
         log "配置 iptables：UDP ${mport} 重定向到 ${PORT}（NAT PREROUTING）..."
         if iptables -t nat -C PREROUTING -p udp --dport "${ipt_range}" -j REDIRECT --to-ports "${PORT}" >/dev/null 2>&1; then
             ok "iptables 规则已存在，跳过添加"
@@ -282,6 +283,7 @@ EOF
 
 
     # ---------- 服务管理 ----------
+    local SERVICE_NAME SERVICE_PATH
     SERVICE_NAME="hysteria-server.service"
     SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
 
@@ -308,6 +310,7 @@ EOF
 
 
     # ---------- 生成客户端 URI ----------
+    local ENC_NODE URI
     ENC_NODE="$(urlencode_fragment "${NODE_NAME}")"
     URI="hysteria2://${PASS}@${HOST}:${PORT}?sni=www.bing.com&insecure=1&allowInsecure=1"
     if [[ "${ENABLE_MPORT}" == "yes" ]]; then
@@ -315,6 +318,10 @@ EOF
     else
         URI="${URI}#${ENC_NODE}"
     fi
+
+    # ---------- 保存链接到 link.bak ----------
+    echo "${URI}" > /etc/hysteria/link.bak
+    ok "订阅链接已保存到 /etc/hysteria/link.bak"
 
     echo
     echo -e "${GREEN}========== 部署完成 ==========${RESET}"
@@ -324,6 +331,112 @@ EOF
     echo -e "${CYAN}提示：${RESET}因使用自签证书，链接已包含 insecure=1 / allowInsecure=1。"
     if [[ "${ENABLE_MPORT}" == "yes" ]]; then
         echo -e "${CYAN}提示：${RESET}已启用端口跳跃 mport=${mport}（UDP）-> ${PORT}。"
+    fi
+}
+
+
+# ============================================================
+#  安装主逻辑
+# ============================================================
+Install_Hy2() {
+    local CONFIRM PASS PORT HOST FAKE_URL NODE_NAME ENABLE_MPORT mport
+
+    # 检查服务是否存在
+    if [[ -f "/etc/systemd/system/hysteria-server.service" ]]; then
+        warn "检测到 Hysteria 2 服务已存在！"
+        safe_read CONFIRM "是否覆盖安装？(y/n, 默认: n): "
+        CONFIRM=${CONFIRM:-n}
+        if [[ "${CONFIRM}" != "y" ]]; then
+            log "已取消安装。"
+            return
+        fi
+    fi
+
+    # 安装环境和依赖
+    dep_install
+
+    log "========== Hysteria 2 一键部署脚本 =========="
+    _do_install_core
+}
+
+
+# ============================================================
+#  读取订阅连接
+# ============================================================
+Read_Link() {
+    echo
+    log "========== 读取订阅连接 =========="
+
+    # 检测 Hysteria 2 是否已安装（OR 关系：任意一个检测到即认为已安装）
+    if ! command -v hysteria > /dev/null 2>&1; then
+        if ! systemctl list-unit-files 2>/dev/null | grep -q '^hysteria-server\.service'; then
+            warn "未检测到 Hysteria 2 安装，请先执行安装操作！"
+            return
+        fi
+    fi
+
+    local LINK_FILE="/etc/hysteria/link.bak"
+
+    if [[ -f "${LINK_FILE}" && -s "${LINK_FILE}" ]]; then
+        ok "读取到已保存的订阅链接："
+        echo
+        echo -e "${GREEN}$(cat "${LINK_FILE}")${RESET}"
+        echo
+    else
+        log "未找到已保存的链接，正在重新生成..."
+
+        # 从配置文件读取参数
+        local config="/etc/hysteria/config.yaml"
+        if [[ ! -f "${config}" ]]; then
+            die "未找到 /etc/hysteria/config.yaml，无法自动生成链接！"
+        fi
+
+        local PORT PASS
+        PORT="$(grep '^listen:' "${config}" | awk -F':' '{print $NF}' | tr -d ' "')"
+        if [[ -z "${PORT}" || ! "${PORT}" =~ ^[0-9]+$ ]]; then
+            die "无法从 config.yaml 中解析出有效端口，请手动检查配置文件！"
+        fi
+        PASS="$(grep 'password:' "${config}" | awk '{print $2}' | tr -d '"')"
+        local HOST
+        HOST="$(get_public_ipv4 2>/dev/null || true)"
+
+        if [[ -z "${HOST}" ]]; then
+            safe_read HOST "自动获取公网 IP 失败，请手动输入服务器公网 IP: "
+            [[ -z "${HOST}" ]] && die "公网 IP 不能为空"
+        fi
+
+        # 检测端口跳跃规则
+        local mport_arg=""
+        if command -v iptables > /dev/null 2>&1; then
+            local jump_rule
+            jump_rule="$(iptables -t nat -L PREROUTING -n 2>/dev/null \
+                | awk '/redir ports/{match($0,/[0-9]+:[0-9]+/); if(RLENGTH>0) print substr($0,RSTART,RLENGTH)}' \
+                | head -1 || true)"
+            if [[ -n "${jump_rule}" ]]; then
+                mport_arg="$(echo "${jump_rule}" | tr ':' '-')"
+                ok "检测到端口跳跃规则：${mport_arg}"
+            fi
+        fi
+
+        local NODE_NAME="hy2-$(printf "%04d" $((RANDOM % 10000)))"
+        local ENC_NODE
+        ENC_NODE="$(urlencode_fragment "${NODE_NAME}")"
+
+        local URI
+        URI="hysteria2://${PASS}@${HOST}:${PORT}?sni=www.bing.com&insecure=1&allowInsecure=1"
+        if [[ -n "${mport_arg}" ]]; then
+            URI="${URI}&mport=${mport_arg}#${ENC_NODE}"
+        else
+            URI="${URI}#${ENC_NODE}"
+        fi
+
+        # 保存链接
+        install -d -m 0755 /etc/hysteria
+        echo "${URI}" > "${LINK_FILE}"
+        ok "订阅链接已生成并保存到 ${LINK_FILE}"
+        echo
+        echo -e "${GREEN}${URI}${RESET}"
+        echo
     fi
 }
 
@@ -440,6 +553,34 @@ Clean_Iptables() {
 
 
 # ============================================================
+#  快速安装（跳过依赖安装步骤）
+# ============================================================
+Quick_Install_Hy2() {
+    local CONFIRM PASS PORT HOST FAKE_URL NODE_NAME ENABLE_MPORT mport
+
+    # 检查服务是否存在
+    if [[ -f "/etc/systemd/system/hysteria-server.service" ]]; then
+        warn "检测到 Hysteria 2 服务已存在！"
+        safe_read CONFIRM "是否覆盖安装？(y/n, 默认: n): "
+        CONFIRM=${CONFIRM:-n}
+        if [[ "${CONFIRM}" != "y" ]]; then
+            log "已取消安装。"
+            return
+        fi
+    fi
+
+    warn "========== 快速安装模式 =========="
+    warn "请确保您已手动完成以下依赖的安装："
+    warn "  apt-get install -y curl wget openssl iptables iptables-persistent"
+    echo
+
+    log "========== Hysteria 2 一键部署脚本（快速安装）=========="
+    _do_install_core
+}
+
+
+
+# ============================================================
 #  入口：参数触发 或 菜单触发
 # ============================================================
 menu() {
@@ -460,16 +601,20 @@ menu() {
         echo "1) 安装 Hysteria 2"
         echo "2) 卸载/环境清理"
         echo "3) 清理端口跳跃规则 (iptables)"
+        echo "4) 读取订阅连接"
+        echo "5) 快速安装（请手动完成依赖部分的安装）"
         echo "0) 退出脚本"
-        safe_read CHOICE "请输入选项 [0-3] (直接回车 = 默认 1): "
+        safe_read CHOICE "请输入选项 [0-5] (直接回车 = 默认 1): "
         CHOICE="${CHOICE:-1}"
 
         case "${CHOICE}" in
         1) Install_Hy2 ;;
         2) Uninstall_Hy2 ;;
         3) Clean_Iptables ;;
+        4) Read_Link ;;
+        5) Quick_Install_Hy2 ;;
         0) ok "退出脚本"; exit 0 ;;
-        *) warn "无效选项：${CHOICE}，默认退出"; exit 1 ;;
+        *) warn "无效选项：${CHOICE}，请重新输入"; continue ;;
         esac
     done
 }
